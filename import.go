@@ -14,8 +14,10 @@ var outputFormat = "%-40s %-17s %s\n"
 func ImportCardsIntoClubhouse(cards *[]Card, opts *ClubhouseOptions, um *UserMap) {
 	fmt.Println("Importing trello cards into Clubhouse...")
 	fmt.Printf(outputFormat+"\n", "Trello Card Link", "Import Status", "Error/Story ID")
+	stories, _ := opts.ClubhouseEntry.ListStories(opts.Project.ID)
 
 	for _, c := range *cards {
+		deleteMatchingStories(stories, opts, c)
 		//We could use bulk update but lets give the user some prompt feedback
 		st, err := opts.ClubhouseEntry.CreateStory(*buildClubhouseStory(&c, opts, um))
 		if err != nil {
@@ -27,13 +29,25 @@ func ImportCardsIntoClubhouse(cards *[]Card, opts *ClubhouseOptions, um *UserMap
 	}
 }
 
+func deleteMatchingStories(stories []ch.Story, opts *ClubhouseOptions, card Card) {
+	//delete story if already exists
+	for i := 0; i < len(stories); i++ {
+		if stories[i].Name == card.Name {
+			err := opts.ClubhouseEntry.DeleteStory(stories[i].ID)
+			if err != nil {
+				fmt.Printf(outputFormat, card.ShortURL, "Deleted Matching", fmt.Sprintf("Story ID: %d", stories[i].ID))
+			}
+		}
+	}
+}
+
 func buildLinkFiles(card *Card, opts *ClubhouseOptions) []int64 {
 	ids := []int64{}
 
 	for k, v := range card.Attachments {
 		lf := ch.CreateLinkedFile{
 			Name:       k,
-			Type:       "url",
+			Type:       "dropbox",
 			URL:        v,
 			UploaderID: opts.ImportMember.ID,
 		}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -8,12 +9,15 @@ import (
 	"regexp"
 	"time"
 
-	trello "github.com/jnormington/go-trello"
+	"github.com/jnormington/go-trello"
 	dropbox "github.com/tj/go-dropbox"
+	"github.com/variadico/lctime"
+	"github.com/go-resty/resty"
 )
 
 var dateLayout = "2006-01-02T15:04:05.000Z"
 var safeFileNameRegexp = regexp.MustCompile(`[^a-zA-Z0-9_.]+`)
+var localeId = "America/Boise"
 
 // Card holds all the attributes needed for migrating a complete card from Trello to Clubhouse
 type Card struct {
@@ -43,6 +47,23 @@ type Comment struct {
 	IDCreator   string
 	CreatorName string
 	CreatedAt   *time.Time
+}
+
+//DropboxShareReq is the request object for CreateSharedLink
+type DropboxShareReq struct {
+	Path string `json:"path"`
+}
+
+//DropboxShareLinks is the request object for GetSharedLinks
+type DropboxShareLinks struct {
+	Links []DropboxShareLink `json:"links"`
+}
+
+// DropboxShareLink is the response object for CreateSharedLink
+type DropboxShareLink struct {
+	URL     string    `json:"url"`
+	Path    string    `json:"path_lower"`
+	Expires time.Time `json:"expires,omitempty"`
 }
 
 // ProcessCardsForExporting takes *[]trello.Card, *TrelloOptions and builds up a Card
@@ -152,7 +173,8 @@ func parseDateOrReturnNil(strDate string) *time.Time {
 
 func downloadCardAttachmentsUploadToDropbox(card *trello.Card) map[string]string {
 	sharedLinks := map[string]string{}
-	d := dropbox.New(dropbox.NewConfig(dropboxToken))
+	config := dropbox.NewConfig(dropboxToken)
+	c := dropbox.New(config)
 
 	attachments, err := card.Attachments()
 	if err != nil {
@@ -163,30 +185,38 @@ func downloadCardAttachmentsUploadToDropbox(card *trello.Card) map[string]string
 		name := safeFileNameRegexp.ReplaceAllString(f.Name, "_")
 		path := fmt.Sprintf("/trello/%s/%s/%d%s%s", card.IdList, card.Id, i, "_", name)
 
-		io := downloadTrelloAttachment(&f)
-		_, err := d.Files.Upload(&dropbox.UploadInput{
-			Path:   path,
-			Mode:   dropbox.WriteModeAdd,
-			Reader: io,
-			Mute:   true,
-		})
-
-		io.Close()
+		r := downloadTrelloAttachment(&f)
+		lctime.SetLocale(localeId)
+		n := lctime.Strftime("%Y-%m-%dT%H:%M:%SZ", time.Now())
 
 		if err != nil {
-			fmt.Printf("Error occurred uploading file to dropbox continuing... %s\n", err)
+			log.Fatalf("Error occurred downloading file from trello... %s\n", err)
 		} else {
-			// Must be success created a shared url
-			s := dropbox.CreateSharedLinkInput{path, false}
-			out, err := d.Sharing.CreateSharedLink(&s)
+
+			u := dropbox.UploadInput{Path: path, Mode: "overwrite", AutoRename: false, Mute: true,
+				ClientModified: n, Reader: r}
+			o, err := c.Files.Upload(&u)
+
 			if err != nil {
-				fmt.Printf("Error occurred sharing file on dropbox continuing... %s\n", err)
+				log.Fatalf("Error occurred uploading file: '%s' to dropbox continuing. Error: '%s'\n", o.PathDisplay, err)
 			} else {
-				sharedLinks[name] = out.URL
+				links, _ := getSharedLinks(o.PathDisplay)
+
+				if len(links.Links) == 0 {
+					link, err := createShareLink(o.PathDisplay)
+					// Must be success created a shared url
+					if err != nil {
+						log.Printf("Error occurred sharing file: '%s' to dropbox continuing. Error: '%s'\n", o.PathDisplay, err)
+					} else {
+						sharedLinks[name] = link.URL
+					}
+				} else {
+					sharedLinks[name] = links.Links[0].URL
+				}
+
 			}
 		}
 	}
-
 	return sharedLinks
 }
 
@@ -199,4 +229,34 @@ func downloadTrelloAttachment(attachment *trello.Attachment) io.ReadCloser {
 	}
 
 	return resp.Body
+}
+
+func createShareLink(path string) (out *DropboxShareLink, err error) {
+	endpoint := "sharing/create_shared_link_with_settings"
+	sh := DropboxShareReq{path}
+	call(sh, endpoint)
+	return
+}
+
+func getSharedLinks(path string) (out *DropboxShareLinks, err error) {
+	endpoint := "/sharing/list_shared_links"
+	sh := DropboxShareReq{path}
+	call(sh, endpoint)
+	return
+}
+
+func call(in interface{}, endpoint string) (out interface{}) {
+	body, _ := json.Marshal(in)
+	resp, err := resty.R().
+		SetBody(body).
+		SetContentLength(true). // Dropbox expects this value
+		SetAuthToken(dropboxToken).
+		Post(fmt.Sprintf("https://api.dropboxapi.com/2/%s", endpoint))
+
+	if err != nil {
+		return
+	}
+
+	err = json.NewDecoder(resp.RawBody()).Decode(&out)
+	return
 }
