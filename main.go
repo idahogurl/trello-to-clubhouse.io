@@ -8,10 +8,10 @@ import (
 )
 
 var (
-	clubHouseToken = "YOURTOKEN"
-	trelloToken    = "YOURTOKEN"
-	trelloKey      = "YOURKEY"
-	dropboxToken = "YOURTOKEN";
+	clubHouseToken 	= "YOURTOKEN"
+	trelloToken    	= "YOURTOKEN"
+	trelloKey      	= "YOURKEY"
+	dropboxToken	= "YOURTOKEN"
 
 	stdinReader   = bufio.NewReader(os.Stdin)
 	errOutOfRange = "Number input is out of range. Try again"

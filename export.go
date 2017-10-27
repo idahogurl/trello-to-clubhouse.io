@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -10,9 +9,8 @@ import (
 	"time"
 
 	"github.com/jnormington/go-trello"
-	dropbox "github.com/tj/go-dropbox"
+	"github.com/tj/go-dropbox"
 	"github.com/variadico/lctime"
-	"github.com/go-resty/resty"
 )
 
 var dateLayout = "2006-01-02T15:04:05.000Z"
@@ -47,23 +45,6 @@ type Comment struct {
 	IDCreator   string
 	CreatorName string
 	CreatedAt   *time.Time
-}
-
-//DropboxShareReq is the request object for CreateSharedLink
-type DropboxShareReq struct {
-	Path string `json:"path"`
-}
-
-//DropboxShareLinks is the request object for GetSharedLinks
-type DropboxShareLinks struct {
-	Links []DropboxShareLink `json:"links"`
-}
-
-// DropboxShareLink is the response object for CreateSharedLink
-type DropboxShareLink struct {
-	URL     string    `json:"url"`
-	Path    string    `json:"path_lower"`
-	Expires time.Time `json:"expires,omitempty"`
 }
 
 // ProcessCardsForExporting takes *[]trello.Card, *TrelloOptions and builds up a Card
@@ -186,24 +167,32 @@ func downloadCardAttachmentsUploadToDropbox(card *trello.Card) map[string]string
 		path := fmt.Sprintf("/trello/%s/%s/%d%s%s", card.IdList, card.Id, i, "_", name)
 
 		r := downloadTrelloAttachment(&f)
+
 		lctime.SetLocale(localeId)
 		n := lctime.Strftime("%Y-%m-%dT%H:%M:%SZ", time.Now())
 
 		if err != nil {
 			log.Fatalf("Error occurred downloading file from trello... %s\n", err)
 		} else {
-
 			u := dropbox.UploadInput{Path: path, Mode: "overwrite", AutoRename: false, Mute: true,
 				ClientModified: n, Reader: r}
+
 			o, err := c.Files.Upload(&u)
 
+			r.Close()
 			if err != nil {
 				log.Fatalf("Error occurred uploading file: '%s' to dropbox continuing. Error: '%s'\n", o.PathDisplay, err)
 			} else {
-				links, _ := getSharedLinks(o.PathDisplay)
+				sh := dropbox.NewSharing(config)
+
+				listInput := dropbox.ListShareLinksInput{Path: o.PathDisplay}
+				links, _ := sh.ListSharedLinks(&listInput)
 
 				if len(links.Links) == 0 {
-					link, err := createShareLink(o.PathDisplay)
+					sl := dropbox.CreateSharedLinkInput{ Path: o.PathDisplay, ShortURL: true }
+
+					link, err := sh.CreateSharedLink(&sl)
+
 					// Must be success created a shared url
 					if err != nil {
 						log.Printf("Error occurred sharing file: '%s' to dropbox continuing. Error: '%s'\n", o.PathDisplay, err)
@@ -213,50 +202,19 @@ func downloadCardAttachmentsUploadToDropbox(card *trello.Card) map[string]string
 				} else {
 					sharedLinks[name] = links.Links[0].URL
 				}
-
 			}
 		}
 	}
+
 	return sharedLinks
 }
 
 func downloadTrelloAttachment(attachment *trello.Attachment) io.ReadCloser {
 	resp, err := http.Get(attachment.Url)
-	//	defer resp.Body.Close()
 
 	if err != nil {
 		log.Fatalf("Error in download Trello attachment %s\n", err)
 	}
 
 	return resp.Body
-}
-
-func createShareLink(path string) (out *DropboxShareLink, err error) {
-	endpoint := "sharing/create_shared_link_with_settings"
-	sh := DropboxShareReq{path}
-	call(sh, endpoint)
-	return
-}
-
-func getSharedLinks(path string) (out *DropboxShareLinks, err error) {
-	endpoint := "/sharing/list_shared_links"
-	sh := DropboxShareReq{path}
-	call(sh, endpoint)
-	return
-}
-
-func call(in interface{}, endpoint string) (out interface{}) {
-	body, _ := json.Marshal(in)
-	resp, err := resty.R().
-		SetBody(body).
-		SetContentLength(true). // Dropbox expects this value
-		SetAuthToken(dropboxToken).
-		Post(fmt.Sprintf("https://api.dropboxapi.com/2/%s", endpoint))
-
-	if err != nil {
-		return
-	}
-
-	err = json.NewDecoder(resp.RawBody()).Decode(&out)
-	return
 }
